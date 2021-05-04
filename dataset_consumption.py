@@ -180,8 +180,7 @@ def save_to_pg(transactions_per_country: pd.DataFrame) -> None:
     save_pg_table(transactions_per_country_pg)
 
 
-def save_result(transactions_per_country: pd.DataFrame, output_type: str) -> None:
-    print(transactions_per_country)
+def save_result(transactions_per_country: pd.DataFrame, output_type: str, file_key: str = None) -> None:
     """Save the final dataframe to the selected destination"""
     if output_type == "local":
         save_on_local(transactions_per_country)
