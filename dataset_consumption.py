@@ -10,28 +10,37 @@ import numpy as np
 import argparse
 import os
 import requests
-# import psycopg2
-from timeit import default_timer as timer
+import psycopg2
+import functools
+import time
+import logging
 
 from countries import *
 
 
 # address of the API endpoint for data loading
-API_endpoint = "domain.com/new_api"
+API_endpoint = "http://domain.com/new_api"
 
 
-def start_timer() -> float:
-    """Start timer prior to function call"""
-    start = timer()
-    return start
+def allow_logging(func):
+    """Wrapper for logging - announces function start with its name and function end including its duration"""
+    functools.wraps(func)
+
+    def wrapper(*args, **kwargs):
+        logger = logging.getLogger()
+        logger.setLevel("DEBUG")
+        start = time.perf_counter()
+        logging.info(f"### Starting function: {func.__name__}")
+        value = func(*args, **kwargs)
+        end = time.perf_counter()
+        logging.info(f"### Execution time of function {func.__name__}: {end - start:.3f} seconds")
+
+        return value
+
+    return wrapper
 
 
-def end_timer(start: float, function_name: str) -> None:
-    """End timer right after a function and print out its duration"""
-    end = timer()
-    print(f"Execution time of function {function_name}:\t{end - start}")
-
-
+@allow_logging
 def retrieve_dataset(page: int) -> requests.Response():
     """Retrieve a given page of a dataset from API endpoint"""
     response = requests.get(f"{API_endpoint}?page={page}")
@@ -40,30 +49,33 @@ def retrieve_dataset(page: int) -> requests.Response():
     return response
 
 
+@allow_logging
 def retrieve_dataset_local(input_file: str) -> pd.DataFrame:
     """Retrieve a given page of a dataset from local storage"""
     try:
         response = pd.read_csv(os.path.join(os.curdir, "Data", input_file))
     except IOError:
         print(f"Cannot open input file: {input_file}")
+        return None
 
     return response
 
 
+@allow_logging
 def summarize_data(response_data: pd.DataFrame) -> pd.DataFrame:
     """Summarize data from multiple pages into final statistics"""
     # filter out rows with no or invalid status
     response_data = response_data.loc[response_data["status"].isin(["pending", "completed", "failed"])]
-    # filter out rows with mnount equal to none and an invalid value in amount
-    response_data["amount"] = response_data.to_numeric(response_data["amount"], errors='coerce')
+    # filter out rows with amount equal to none and an invalid value in amount
+    response_data = response_data.assign(amount=pd.to_numeric(response_data["amount"], errors='coerce'))
     response_data = response_data.dropna(subset=["amount"])
 
     # create flags of individual types of transactions
-    response_data["amount_pending"] = np.where(response_data["status"] == "pending", response_data["amount"], 0)
-    response_data["count_pending"] = np.where(response_data["status"] == "pending", 1, 0)
-    response_data["amount_completed"] = np.where(response_data["status"] == "completed", response_data["amount"], 0)
-    response_data["failed_over_1M"] = np.where((response_data["status"] == "failed") & (response_data["amount"] > 1_000_000), 1, 0)
-    response_data["failed_under_1M"] = np.where((response_data["status"] == "failed") & (response_data["amount"] <= 1_000_000), 1, 0)
+    response_data = response_data.assign(amount_pending=np.where(response_data["status"] == "pending", response_data["amount"], 0))
+    response_data = response_data.assign(count_pending=np.where(response_data["status"] == "pending", 1, 0))
+    response_data = response_data.assign(amount_completed=np.where(response_data["status"] == "completed", response_data["amount"], 0))
+    response_data = response_data.assign(failed_over_1M=np.where((response_data["status"] == "failed") & (response_data["amount"] > 1_000_000), 1, 0))
+    response_data = response_data.assign(failed_under_1M=np.where((response_data["status"] == "failed") & (response_data["amount"] <= 1_000_000), 1, 0))
 
     # get total counts of given types of transactions per country
     counts_per_country = (
@@ -86,6 +98,46 @@ def summarize_data(response_data: pd.DataFrame) -> pd.DataFrame:
     return counts_per_country
 
 
+@allow_logging
+def load_and_process_data_local() -> pd.DataFrame:
+    """Load data from local storage page per page and compute transaction statistics per country from them"""
+    input_datasets = sorted(os.listdir(os.path.join(os.curdir, "Data")))
+
+    for page, input_file in enumerate(input_datasets):
+        response = retrieve_dataset_local(input_file)
+
+        if response is None:
+            return None
+
+        if page == 0:
+            transactions_per_country = summarize_data(response)
+        else:
+            transactions_per_country = pd.concat([transactions_per_country, summarize_data(response)])
+    
+    return transactions_per_country
+
+
+def load_and_process_data_rest_api() -> pd.DataFrame:
+    """Load data from REST API page per page and compute transaction statistics per country from them"""
+    page = 0
+
+    while page is not None:
+        response = retrieve_dataset(page)
+
+        response_data = response.json().get("data")
+
+        if response_data is not None:
+            if page == 0:
+                transactions_per_country = summarize_data(response_data)
+            else:
+                transactions_per_country = pd.concat([transactions_per_country, summarize_data(response_data)])
+        
+        page = response.json().get("next_page")
+    
+    return transactions_per_country
+
+
+@allow_logging
 def aggregate_per_country(transactions_per_country: pd.DataFrame) -> pd.DataFrame:
     """Aggregate counts from individual pages to statistics of the entire dataset"""
     # get total counts of given types of transactions per country
@@ -106,10 +158,10 @@ def aggregate_per_country(transactions_per_country: pd.DataFrame) -> pd.DataFram
     transactions_per_country.columns = [colnames[0] for colnames in transactions_per_country.columns.values]
 
     # compute statistics per country
-    transactions_per_country["average_outstanding"] = transactions_per_country["amount_pending_sum"] / transactions_per_country["count_pending_sum"]
-    transactions_per_country["total_completed"] = transactions_per_country["amount_completed_sum"]
-    transactions_per_country["critical_rate"] = transactions_per_country["failed_over_1M_sum"] / transactions_per_country["status_count"] * 100
-    transactions_per_country["error_rate"] = transactions_per_country["failed_under_1M_sum"] / transactions_per_country["status_count"] * 100
+    transactions_per_country = transactions_per_country.assign(average_outstanding=transactions_per_country["amount_pending_sum"] / transactions_per_country["count_pending_sum"])
+    transactions_per_country = transactions_per_country.assign(total_completed=transactions_per_country["amount_completed_sum"])
+    transactions_per_country = transactions_per_country.assign(critical_rate=transactions_per_country["failed_over_1M_sum"] / transactions_per_country["status_count"] * 100)
+    transactions_per_country = transactions_per_country.assign(error_rate=transactions_per_country["failed_under_1M_sum"] / transactions_per_country["status_count"] * 100)
 
     # select columns
     transactions_per_country = transactions_per_country[["country", "average_outstanding", "total_completed", "critical_rate", "error_rate"]]
@@ -117,16 +169,19 @@ def aggregate_per_country(transactions_per_country: pd.DataFrame) -> pd.DataFram
     return transactions_per_country
 
 
+@allow_logging
 def save_on_local(transactions_per_country: pd.DataFrame) -> None:
     """Save output to local storage"""
     transactions_per_country.to_csv("transactions_per_country.csv", index=False, header=True)
 
 
+@allow_logging
 def save_to_s3(transactions_per_country: pd.DataFrame, file_key: str) -> None:
     """Save output to S3 bucket"""
     pass
 
 
+@allow_logging
 def save_pg_table(country_transactions):
     """Create table in the PostgreSQL database and store the resulting dataframe"""
     drop_table_command = "DROP TABLE country_transactions"
@@ -173,6 +228,7 @@ def save_pg_table(country_transactions):
             conn.close()
 
 
+@allow_logging
 def save_to_pg(transactions_per_country: pd.DataFrame) -> None:
     """Save output to PostgreSQL database"""
     # transform dataframe to list of tuples
@@ -180,6 +236,7 @@ def save_to_pg(transactions_per_country: pd.DataFrame) -> None:
     save_pg_table(transactions_per_country_pg)
 
 
+@allow_logging
 def save_result(transactions_per_country: pd.DataFrame, output_type: str, file_key: str = None) -> None:
     """Save the final dataframe to the selected destination"""
     if output_type == "local":
@@ -191,47 +248,28 @@ def save_result(transactions_per_country: pd.DataFrame, output_type: str, file_k
 
 
 def main(args: argparse.Namespace) -> None:
+    input_type = args.input_type
     output_type = args.output_type
-    input_datasets = sorted(os.listdir(os.path.join(os.curdir, "Data")))
-    page = 0
 
-    # while page < 9:
-    for page, input_file in enumerate(input_datasets):
-    # while page is not None:
-        start = start_timer()
-        response = retrieve_dataset_local(input_file)
-        end_timer(start, "retrieve_dataset_local")
+    if input_type == "local":
+        transactions_per_country = load_and_process_data_local()
+            
+    elif input_type == "rest-api":
+        transactions_per_country = load_and_process_data_rest_api()
 
-        response_data = response
+    if transactions_per_country is None:
+        return None
 
-        # response = retrieve_dataset(page)
-        # response_data = response.json().get("data")
-
-        if response_data is not None:
-            if page == 0:
-                start = start_timer()
-                transactions_per_country = summarize_data(response_data)
-                end_timer(start, "summarize_data")
-            else:
-                start = start_timer()
-                transactions_per_country = pd.concat([transactions_per_country, summarize_data(response_data)])
-                end_timer(start, "summarize_data")
-        
-        page += 1
-        # page = response.json().get("next_page")
-
-    start = start_timer()
     transactions_per_country = aggregate_per_country(transactions_per_country)
-    end_timer(start, "aggregate_per_country")
 
     # save the result to the specified destination 
-    start = start_timer()
     save_result(transactions_per_country, output_type)
-    end_timer(start, "save_result")
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
+    parser.add_argument('--input-type', dest='input_type', type=str, required=False, choices=["local", "rest-api"], default="rest-api",
+                    help="Destination of the resulting dataset")
     parser.add_argument('--output-type', dest='output_type', type=str, required=True, choices=["local", "s3", "pg"],
                     help="Destination of the resulting dataset")
     args = parser.parse_args()
