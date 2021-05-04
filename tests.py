@@ -19,18 +19,17 @@ from dataset_consumption import summarize_data, aggregate_per_country, save_on_l
 from countries import *
 
 
-        # data = {
-        #     "country": countries,
-        #     "average_outstanding": [random.randrange(0, 10_000_000) for _ in range(len(countries))],
-        #     "total_completed": [random.randrange(0, 100_000_000) for _ in range(len(countries))],
-        #     "critical_rate": [random.random() * 100 for _ in range(len(countries))],
-        #     "error_rate": [random.random() * 100 for _ in range(len(countries))],
-        # }
+# data = {
+#     "country": countries,
+#     "average_outstanding": [random.randrange(0, 10_000_000) for _ in range(len(countries))],
+#     "total_completed": [random.randrange(0, 100_000_000) for _ in range(len(countries))],
+#     "critical_rate": [random.random() * 100 for _ in range(len(countries))],
+#     "error_rate": [random.random() * 100 for _ in range(len(countries))],
+# }
 
-        # df = pd.DataFrame(data) 
+# df = pd.DataFrame(data) 
 
-        # df.to_csv("test_save_on_local.csv", index=False, header=True)
-
+# df.to_csv("test_save_on_local.csv", index=False, header=True)
 
 
 class TestDataSummarization(unittest.TestCase):
@@ -44,7 +43,6 @@ class TestDataSummarization(unittest.TestCase):
         except IOError:
             print(f"Cannot open solution test file {self.test_solution_filename}")
 
-
     def test_summarization(self):
         """Test that the data summarization logic is correct"""
         try:
@@ -55,7 +53,6 @@ class TestDataSummarization(unittest.TestCase):
         result = summarize_data(data)
 
         assert_frame_equal(self.correct_result, result)
-
 
 
 class TestAggregationByCountry(unittest.TestCase):
@@ -69,7 +66,6 @@ class TestAggregationByCountry(unittest.TestCase):
         except IOError:
             print(f"Cannot open solution test file {self.test_solution_filename}")
 
-
     def test_aggregation(self):
         """Test that aggregation by country is correct"""
         try:
@@ -80,7 +76,6 @@ class TestAggregationByCountry(unittest.TestCase):
         result = aggregate_per_country(data)
 
         assert_frame_equal(self.correct_result, result)
-
 
 
 class TestSavingOnLocal(unittest.TestCase):
@@ -94,7 +89,6 @@ class TestSavingOnLocal(unittest.TestCase):
         except IOError:
             print(f"Cannot open solution test file {self.test_solution_filename}")
 
-
     def test_file_created(self):
         """Test that the file is created and is in the right location"""
         # delete the file if it exists
@@ -105,7 +99,6 @@ class TestSavingOnLocal(unittest.TestCase):
         save_on_local(data)
 
         self.assertIn("transactions_per_country.csv", os.listdir(os.curdir))
-
 
 
 if __name__ == '__main__':
